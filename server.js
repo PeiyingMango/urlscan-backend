@@ -20,17 +20,25 @@ app.post("/api/urlscan", async (req, res) => {
   if (!url) return res.status(400).json({ error: "URL is required" });
 
   try {
-    const response = await fetch("https://urlscan.io/api/v1/scan/", {
-      method: "POST",
+    // 使用 urlscan.io 的 search API 检查这个 URL 是否已经在 urlscan 数据库中
+    const searchUrl = `https://urlscan.io/api/v1/search/?q=page.url:"${encodeURIComponent(
+      url
+    )}"`;
+
+    const response = await fetch(searchUrl, {
+      method: "GET",
       headers: {
-        "API-Key": URLSCAN_API_KEY,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ url })
+        "API-Key": URLSCAN_API_KEY
+      }
     });
 
     const data = await response.json();
-    res.json(data);
+
+    // 如果 total > 0，说明这个 URL 在 urlscan.io 中有记录
+    // 按你论文的设计：视为 malicious（黑名单），前端就会弹 warning.html
+    const malicious = typeof data.total === "number" && data.total > 0;
+
+    res.json({ ...data, malicious });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to scan URL" });
