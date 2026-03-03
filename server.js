@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 3000;
 const URLSCAN_API = process.env.VIRUSTOTAL_API; // URLScan API key
 
 if (!URLSCAN_API) {
-  console.error("⚠️ VIRUSTOTAL_API not set in environment variables!");
+  console.error("⚠️ URLSCAN_API not set in environment variables!");
   process.exit(1);
 }
 
@@ -60,7 +60,7 @@ async function searchExisting(url) {
   return null;
 }
 
-app.post("/api/virustotal", async (req, res) => {
+app.post("/api/urlscan", async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL is required" });
 
