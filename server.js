@@ -50,22 +50,8 @@ function extractFields(result) {
 
   const geoip = meta?.processors?.geoip?.data?.[0] || {};
 
-  // ✅ 修复：verdicts.engines 才是 VirusTotal 各引擎的检测结果
-  // urlscan 的 stats 是页面资源统计，不是 VT engine 数据
-  const verdictsRaw   = result?.verdicts || {};
-  const enginesRaw    = verdictsRaw?.engines || {};
-
-  // VirusTotal engine 检测数 — 从 verdicts.engines 里提取
-  // urlscan 会把 VT 结果汇总到 verdicts.engines.score/malicious
-  // 具体每个 engine 的 malicious/suspicious/harmless/undetected 在 result.meta.processors.vt
-  const vtProcessed   = meta?.processors?.vt?.data?.attributes?.last_analysis_stats || {};
-  const vtMalicious   = vtProcessed?.malicious   || 0;
-  const vtSuspicious  = vtProcessed?.suspicious  || 0;
-  const vtHarmless    = vtProcessed?.harmless    || 0;
-  const vtUndetected  = vtProcessed?.undetected  || 0;
-
-  // 如果 vt processor 没有数据，fallback 到 engines verdict
-  const hasvtData = (vtMalicious + vtSuspicious + vtHarmless + vtUndetected) > 0;
+  const verdictsRaw = result?.verdicts || {};
+  const enginesRaw  = verdictsRaw?.engines || {};
 
   const verdicts = {
     overall: {
@@ -88,14 +74,14 @@ function extractFields(result) {
     website_address: page?.domain || null,
     last_analysis:   task?.time   || null,
 
-    // ✅ 修复：detection_counts 用 VT processor 数据，不用 urlscan stats
+      // detection_counts 由 VIRUSTOTAL_API 负责，URLScan 这边不提供
     detection_counts: {
-      malicious:  vtMalicious,
-      suspicious: vtSuspicious,
-      harmless:   vtHarmless,
-      undetected: vtUndetected,
+      malicious:  0,
+      suspicious: 0,
+      harmless:   0,
+      undetected: 0,
     },
-    malicious: vtMalicious > 0 || verdicts.overall.malicious,
+    malicious: verdicts.overall.malicious,
 
     // Verdicts
     verdict:  verdictsRaw?.overall?.score || 0,
@@ -157,15 +143,6 @@ async function searchExisting(url) {
       if (fullRes.ok) {
         const fullData = await fullRes.json();
         const extracted = extractFields(fullData);
-
-        // ✅ 修复：如果缓存的数据 detection_counts 全是 0，不信任缓存，重新扫描
-        const dc = extracted.detection_counts;
-        const hasDetectionData = (dc.malicious + dc.suspicious + dc.harmless + dc.undetected) > 0;
-        if (!hasDetectionData && !extracted.verdicts?.overall?.malicious) {
-          console.log("[URLScan] Existing result has no detection data, will re-scan");
-          return null;
-        }
-
         return { ...extracted, analysisId: uuid, fromCache: false, fromExisting: true };
       }
     }
@@ -182,17 +159,10 @@ app.post("/api/virustotal", async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL is required" });
 
-  // 1️⃣ 内存 cache — 只有 detection_counts 有数据才用缓存
+  // 1️⃣ 内存 cache
   const cached = getCached(url);
   if (cached) {
-    const dc = cached.detection_counts || {};
-    const hasData = (dc.malicious + dc.suspicious + dc.harmless + dc.undetected) > 0;
-    if (hasData || cached.verdicts?.overall?.malicious) {
-      return res.json({ ...cached, fromCache: true });
-    }
-    // 缓存的数据没有 detection，删掉重新扫
-    urlCache.delete(url);
-    console.log("[Cache] Evicted zero-detection entry:", url);
+    return res.json({ ...cached, fromCache: true });
   }
 
   // 2️⃣ 搜索现有结果（快）
