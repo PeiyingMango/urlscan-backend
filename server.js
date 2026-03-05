@@ -255,3 +255,117 @@ app.get("/api/cache/stats", (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 URLScan backend running on port ${PORT}`);
 });
+
+// ===============================
+// AI Screenshot Analysis (Gemini Vision)
+// Add this to your server.js
+// ===============================
+// Required: GEMINI_API_KEY in your Render environment variables
+// Get one free at: https://aistudio.google.com/app/apikey
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+app.post("/api/analyze-screenshot", async (req, res) => {
+  const { screenshot_url } = req.body;
+  if (!screenshot_url) {
+    return res.status(400).json({ error: "screenshot_url is required" });
+  }
+
+  if (!GEMINI_API_KEY) {
+    console.warn("[AI] GEMINI_API_KEY not set — skipping analysis");
+    return res.status(503).json({ error: "AI analysis not configured" });
+  }
+
+  try {
+    // 1️⃣ Download the screenshot image
+    const imgRes = await fetch(screenshot_url);
+    if (!imgRes.ok) {
+      return res.status(400).json({ error: "Could not fetch screenshot" });
+    }
+    const imgBuffer = await imgRes.arrayBuffer();
+    const base64Image = Buffer.from(imgBuffer).toString("base64");
+    const mimeType = imgRes.headers.get("content-type") || "image/png";
+
+    // 2️⃣ Call Gemini Vision
+    const prompt = `You are a cybersecurity analyst specializing in phishing detection.
+Analyze this website screenshot and identify suspicious UI elements.
+
+Respond ONLY with valid JSON in this exact format (no markdown, no explanation):
+{
+  "fake_logo": true or false,
+  "fake_login": true or false,
+  "brand_detected": "brand name if impersonating a known brand, or null",
+  "reasons": ["reason 1", "reason 2"]
+}
+
+Check for:
+- Fake or copied logos from well-known brands (Google, Facebook, PayPal, banks, crypto wallets, etc.)
+- Login forms asking for passwords, seed phrases, private keys, or credit cards
+- Urgency messages ("Your account will be suspended", "Claim now", etc.)
+- Brand impersonation (site looks like a real company but URL doesn't match)
+- Suspicious form fields collecting sensitive data`;
+
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: prompt },
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Image,
+                }
+              }
+            ]
+          }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 512,
+          }
+        })
+      }
+    );
+
+    if (!geminiRes.ok) {
+      const err = await geminiRes.text();
+      console.error("[AI] Gemini API error:", geminiRes.status, err);
+      return res.status(502).json({ error: "Gemini API failed", detail: err });
+    }
+
+    const geminiData = await geminiRes.json();
+    const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    // 3️⃣ Parse JSON response from Gemini
+    let parsed = null;
+    try {
+      // Strip markdown code fences if present
+      const cleaned = rawText.replace(/```json|```/g, "").trim();
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      console.warn("[AI] Could not parse Gemini response:", rawText);
+      return res.status(502).json({ error: "Could not parse AI response", raw: rawText });
+    }
+
+    console.log("[AI] Analysis complete:", {
+      screenshot_url,
+      fake_logo: parsed.fake_logo,
+      fake_login: parsed.fake_login,
+      brand: parsed.brand_detected,
+    });
+
+    res.json({
+      fake_logo:       parsed.fake_logo       || false,
+      fake_login:      parsed.fake_login      || false,
+      brand_detected:  parsed.brand_detected  || null,
+      reasons:         parsed.reasons         || [],
+    });
+
+  } catch (err) {
+    console.error("[AI] analyze-screenshot error:", err);
+    res.status(500).json({ error: "Internal server error", detail: err.message });
+  }
+});
